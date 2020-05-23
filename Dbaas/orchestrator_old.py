@@ -16,6 +16,18 @@ import math
 import time
 from kazoo.client import KazooClient
 
+zk = KazooClient(hosts = "zoo")
+
+zk.start()
+
+zk.ensure_path("/master")
+
+data, stat = zk.get("/master")
+
+zk.create("/master/slave",ephemeral=True)
+
+app = Flask(__name__)
+
 workers = []
 
 global read_counter
@@ -27,63 +39,8 @@ slave_cnt = 0
 global flag
 flag = 0
 
-
-global crash
-crash=False
-
-client = docker.from_env()
-
-zk = KazooClient(hosts = "zoo")
-
-zk.start()
-
-zk.ensure_path("/master")
-
-data, stat = zk.get("/master")
-
-#zk.create("/master/slave",ephemeral=True)
-
-#data, stat = zk.get("/master/slave")
-for container in client.containers.list():
-		if(container.name != 'master' and container.name != 'orchestrator' and container.name != 'rabbitmq' and container.name != 'zoo'):
-			#l1.append(container.top()['Processes'][0][1])
-			pid =container.top()['Processes'][0][1]
-			#l1.append(container)
-			#l.append(l1)
-			
-			zk.create("/master/slave",pid.encode(),ephemeral=True)
-
-children = zk.get_children('/master')
-
-@zk.ChildrenWatch('/master')
-def watch_children(children):
-	global crash
-	global slave_cnt
-	if(crash):
-		crash = False
-		slave_cnt -= 1
-		s_name = "slave_123"+str(slave_cnt)		
-		container = client.containers.run(image = "slave:latest", name=s_name, command="python slave.py", network_mode= "dbaas_default",links = {"rmq":"rmq"}, detach=True)
-		
-		pid = (container.top()['Processes'][0][1])
-		zk.create('/master/'+s_name,pid.encode())
-		#pid = (container.top()['Processes'][0][1])
-		workers.append(pid)
-		print("slave spawned")
-		data = "copy_db " + s_name
-		write_rpc = Rpc_write()
-		print("[x] Write Request...")
-		response = write_rpc.write_call(data)
-		print(response)
-
-app = Flask(__name__)
-
-
-
-
-
 #----------------------------------------------------------------docker SDK----------------------------------------------------------------------------------------
-
+client = docker.from_env()
 print("Containers list")
 container_list = []
 for container in client.containers.list():
@@ -93,7 +50,7 @@ for container in client.containers.list():
 print(container_list)
 print(workers)
 
-stat.pid=workers[0]
+
 
 #-----------------------------------------------------------------------RPC READ----------------------------------------------------------------------------------------------
 class Rpc_read(object):
@@ -147,24 +104,21 @@ class Rpc_write(object):
 
 #---------------------------------------------------------------------------------Scale upDown----------------------------------------------------------------------
 def scale_up_down():
-	#time.sleep(5)
+	time.sleep(5)
     
-	global crash
-	global read_counter
-	global slave_cnt
-	global flag
 	while(not(flag)):
 		continue
-	
+
+	global read_counter
+	global slave_cnt
 
 	while(1):
-		time.sleep(20)
+		time.sleep(120)
 		
 		cnt = read_counter
-		n = int(math.ceil(cnt/4))
+		n = int(math.ceil(cnt/20))
 		
 		x = n-slave_cnt
-		crash=False
 
 		while(x > 0):
 
@@ -176,14 +130,9 @@ def scale_up_down():
 			ll1 = client.containers.list(filters={'name':slave_name})
 			if(len(ll1)>0):
 				slave_name = slave_name+"new1"+str(len(ll1))
-			container = client.containers.run(image = "slave:latest", name= slave_name, command="python slave.py", network_mode= "dbaas_default",links = {"rmq":"rmq"}, detach=True)
-			pid = container.top()['Processes'][0][1]
-			workers.append(pid)
-			zk.create("/master/"+slave_name,pid.encode(),ephemeral=True)
-			data,stat=zk.get('/master/'+slave_name)
-			#stat.pid= pid
+			container = client.containers.run(image = "slave:latest", name= slave_name, command="python slave.py", network_mode= "orc_project_default",links = {"rmq":"rmq"}, detach=True)
+			workers.append(container.top()['Processes'][0][1])
 			print("slave spawned")
-			data = data.decode()
 			data = "copy_db " + slave_name
 			write_rpc = Rpc_write()
 			print("[x] Write Request...")
@@ -216,11 +165,7 @@ def scale_up_down():
 			if(len(l)>1):
 				workers.remove(pid[0]) 
 				l[0][1].kill()
-				children=zk.get_children('/master')
-				for child in children:
-					data,stat=zk.get('/master/'+child)
-					if(data.decode() == pid[0]):
-						zk.delete('/master/'+child)
+				
 				x += 1
 				slave_cnt -= 1
 		
@@ -303,7 +248,7 @@ def crash_master():
 #----------------------------------------------------------------------------------SLAVE CRASH----------------------------------------------------------------------
 @app.route('/api/v1/crash/slave', methods=['POST'])
 def crash_slave():
-	global crash
+
 	l =[]
 	for container in client.containers.list():
 		if(container.name != 'master' and container.name != 'orchestrator' and container.name != 'rabbitmq' and container.name != 'zoo'):
@@ -319,24 +264,26 @@ def crash_slave():
 	if(len(l)>0):
 		workers.remove(pid)
 		print(workers)
-		crash = True
 		l[0][1].kill()
-		time.sleep(5)	
-		children = zk.get_children('/master')
-		for child in children:
-			data,stat = zk.get('/master/'+child)
-			if(data.decode() == pid):
-				crash = True
-				zk.delete('/master/'+child)	
-		
-		
+		time.sleep(5)		
+		global slave_cnt
+		slave_cnt -= 1
+		s_name = "slave_123"+str(slave_cnt)		
+		container = client.containers.run(image = "slave:latest", name=s_name, command="python slave.py", network_mode= "orc_project_default",links = {"rmq":"rmq"}, detach=True)
+		workers.append(container.top()['Processes'][0][1])
+		print("slave spawned")
+		data = "copy_db " + s_name
+		write_rpc = Rpc_write()
+		print("[x] Write Request...")
+		response = write_rpc.write_call(data)
+		print(response)
 		return jsonify({}),200
 	return jsonify({}), 400
 
 #-------------------------------------------------------------------------------------WORKER LIST---------------------------------------------------------------------
 @app.route('/api/v1/worker/list', methods=['GET'])
 def worker_list():
-	#time.sleep(5)
+	time.sleep(5)
 	pid_list = []
 	for container in client.containers.list():
 		pid_list.append(container.top()['Processes'][0][1])
