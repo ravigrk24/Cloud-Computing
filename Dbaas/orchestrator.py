@@ -158,10 +158,10 @@ def scale_up_down():
 	
 
 	while(1):
-		time.sleep(20)
+		time.sleep(120)
 		
 		cnt = read_counter
-		n = int(math.ceil(cnt/4))
+		n = int(math.ceil(cnt/20.0))
 		
 		x = n-slave_cnt
 		crash=False
